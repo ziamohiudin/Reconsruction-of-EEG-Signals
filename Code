@@ -1,0 +1,149 @@
+import os
+os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"]="1" #model will be trained on GPU 1
+
+import os
+import cv2
+from keras.layers import BatchNormalization,Input,Dense,Flatten,Dropout,merge,Reshape,Conv2D,MaxPooling2D,UpSampling2D,Conv2DTranspose
+from keras.models import Model,Sequential
+from keras.callbacks import ModelCheckpoint
+from tensorflow.keras.optimizers import Adadelta, RMSprop,SGD,Adam
+from keras import regularizers
+from keras import backend as K
+
+
+import numpy as np
+import scipy.misc
+import numpy.random as rng
+from PIL import Image, ImageDraw, ImageFont
+from sklearn.utils import shuffle
+import nibabel as nib #reading MR images
+from sklearn.model_selection import train_test_split
+import math
+import glob
+from matplotlib import pyplot as plt
+%matplotlib inline
+
+ff = glob.glob('02_fl3D_Training data/*')
+
+images = []
+for f in range(len(ff)):
+    a = nib.load(ff[f])
+    a = a.get_data()
+    a = a[:,5:210:]
+    for i in range(a.shape[1]):
+        images.append((a[:,i,:]))
+        
+print (a.shape)
+
+a[:,0,:].shape
+images = np.asarray(images)
+images.shape
+images = images.reshape(-1,176,256,1)
+images.shape
+m = np.max(images)
+m = np.max(images)
+mi = np.min(images)
+m, mi
+images = (images - mi) / (m - mi)
+np.min(images), np.max(images)
+
+temp = np.zeros([2663,176,256,1])
+temp[:,0:,0:,:] = images
+images = temp
+
+from sklearn.model_selection import train_test_split
+train_X,valid_X,train_ground,valid_ground = train_test_split(images,images, test_size=0.2, random_state=13)
+print("Dataset (images) shape: {shape}".format(shape=images.shape))
+
+plt.figure(figsize=[5,5])
+
+# Display the first image in training data
+plt.subplot(121)
+curr_img = np.reshape(train_X[0], (176,256))
+plt.imshow(curr_img, cmap='gray')
+
+# Display the first image in testing data
+plt.subplot(122)
+curr_img = np.reshape(valid_X[0], (176,256))
+plt.imshow(curr_img, cmap='gray')
+
+
+batch_size = 128
+epochs = 300
+inChannel = 1
+x, y = 176, 256
+input_img = Input(shape = (x, y, inChannel))
+
+
+def autoencoder(input_img):
+    #encoder
+    #input = 28 x 28 x 1 (wide and thin)
+    conv1 = Conv2D(32, (3, 3), activation='relu', padding='same')(input_img) #28 x 28 x 32
+    conv1 = BatchNormalization()(conv1)
+    conv1 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv1)
+    conv1 = BatchNormalization()(conv1)
+    pool1 = MaxPooling2D(pool_size=(2, 2))(conv1) #14 x 14 x 32
+    conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(pool1) #14 x 14 x 64
+    conv2 = BatchNormalization()(conv2)
+    conv2 = Conv2D(64, (3, 3), activation='relu', padding='same')(conv2)
+    conv2 = BatchNormalization()(conv2)
+    pool2 = MaxPooling2D(pool_size=(2, 2))(conv2) #7 x 7 x 64
+    conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(pool2) #7 x 7 x 128 (small and thick)
+    conv3 = BatchNormalization()(conv3)
+    conv3 = Conv2D(128, (3, 3), activation='relu', padding='same')(conv3)
+    conv3 = BatchNormalization()(conv3)
+
+
+    #decoder
+    conv4 = Conv2D(64, (3, 3), activation='relu', padding='same')(conv3) #7 x 7 x 128
+    conv4 = BatchNormalization()(conv4)
+    conv4 = Conv2D(64, (3, 3), activation='relu', padding='same')(conv4)
+    conv4 = BatchNormalization()(conv4)
+    up1 = UpSampling2D((2,2))(conv4) # 14 x 14 x 128
+    conv5 = Conv2D(32, (3, 3), activation='relu', padding='same')(up1) # 14 x 14 x 64
+    conv5 = BatchNormalization()(conv5)
+    conv5 = Conv2D(32, (3, 3), activation='relu', padding='same')(conv5)
+    conv5 = BatchNormalization()(conv5)
+    up2 = UpSampling2D((2,2))(conv5) # 28 x 28 x 64
+    decoded = Conv2D(1, (3, 3), activation='sigmoid', padding='same')(up2) # 28 x 28 x 1
+    return decoded
+
+
+autoencoder = Model(input_img, autoencoder(input_img))
+autoencoder.compile(loss='mean_squared_error', optimizer = RMSprop())
+autoencoder_train = autoencoder.fit(train_X, train_ground, batch_size=batch_size,epochs=epochs,verbose=1,validation_data=(valid_X, valid_ground))
+
+loss = autoencoder_train.history['loss']
+val_loss = autoencoder_train.history['val_loss']
+epochs = range(300)
+plt.figure()
+plt.plot(epochs, loss, 'bo', label='Training loss')
+plt.plot(epochs, val_loss, 'b', label='Validation loss')
+plt.title('Training and validation loss')
+plt.legend()
+plt.show()
+
+pred = autoencoder.predict(valid_X)
+plt.figure(figsize=(20, 4))
+print("Test Images")
+for i in range(5):
+    plt.subplot(1, 5, i+1)
+    plt.imshow(valid_ground[i, ..., 0], cmap='gray')
+plt.show()    
+plt.figure(figsize=(20, 4))
+print("Reconstruction of Test Images")
+for i in range(5):
+    plt.subplot(1, 5, i+1)
+    plt.imshow(pred[i, ..., 0], cmap='gray')  
+plt.show()
+
+valid_pred = autoencoder.predict(valid_X)
+mse =  np.mean((valid_X - valid_pred) ** 2)
+psnr = 20 * math.log10( 1.0 / math.sqrt(mse))
+print('PSNR of reconstructed validation images: {psnr}dB'.format(psnr=np.round(psnr,2)))
+
+valid_pred = autoencoder.predict(valid_X)
+mse =  np.mean((valid_X - valid_pred) ** 2)
+psnr = 20 * math.log10( 1.0 / math.sqrt(mse))
+print('PSNR of reconstructed validation images: {psnr}dB'.format(psnr=np.round(psnr,2)))
